@@ -1,0 +1,60 @@
+DESC INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+Field	Type	Null	Key	Default	Extra
+SCHEMA_NAME	varchar(192)	NO		NULL	
+PAGES	bigint(21) unsigned	NO		NULL	
+ALLOCATED_BYTES	bigint(21) unsigned	NO		NULL	
+DATA_BYTES	bigint(21) unsigned	NO		NULL	
+CREATE DATABASE bps_a;
+CREATE DATABASE bps_b;
+CREATE TABLE bps_a.t (id INT PRIMARY KEY, v VARCHAR(64)) ENGINE=InnoDB;
+CREATE TABLE bps_b.t (id INT PRIMARY KEY, v VARCHAR(64)) ENGINE=InnoDB;
+INSERT INTO bps_a.t VALUES (1, REPEAT('a', 60)), (2, REPEAT('a', 60));
+INSERT INTO bps_b.t VALUES (1, REPEAT('b', 60)), (2, REPEAT('b', 60));
+SELECT COUNT(*) FROM bps_a.t;
+COUNT(*)
+2
+SELECT COUNT(*) FROM bps_b.t;
+COUNT(*)
+2
+SELECT SCHEMA_NAME, PAGES > 0, ALLOCATED_BYTES > 0
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME IN ('bps_a', 'bps_b')
+ORDER BY SCHEMA_NAME;
+SCHEMA_NAME	PAGES > 0	ALLOCATED_BYTES > 0
+bps_a	1	1
+bps_b	1	1
+SET GLOBAL innodb_buffer_page_stats_by_schema_enabled = OFF;
+SELECT * FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+SCHEMA_NAME	PAGES	ALLOCATED_BYTES	DATA_BYTES
+Warnings:
+Warning	1290	innodb_buffer_page_stats_by_schema_enabled is OFF
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1290	innodb_buffer_page_stats_by_schema_enabled is OFF
+SET GLOBAL innodb_buffer_page_stats_by_schema_enabled = ON;
+SELECT COUNT(*) > 0 AS reenabled
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+reenabled
+1
+SHOW WARNINGS;
+Level	Code	Message
+CREATE USER bps_user@localhost;
+GRANT SELECT ON *.* TO bps_user@localhost;
+connect  con1, localhost, bps_user,,;
+SELECT * FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+ERROR 42000: Access denied; you need (at least one of) the PROCESS privilege(s) for this operation
+disconnect con1;
+connection default;
+DROP USER bps_user@localhost;
+DROP DATABASE bps_a;
+DROP DATABASE bps_b;
+SELECT COUNT(*) AS schemas_with_pages
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME LIKE 'bps_many_%' AND PAGES > 0;
+schemas_with_pages
+50
+SELECT SUM(ALLOCATED_BYTES) > 0 AS bytes_accounted
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME LIKE 'bps_many_%';
+bytes_accounted
+1

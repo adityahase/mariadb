@@ -1,0 +1,68 @@
+FLUSH TABLES;
+CREATE DATABASE bps_cmp_a;
+CREATE DATABASE bps_cmp_b;
+CREATE DATABASE bps_cmp_c;
+CREATE TABLE bps_cmp_a.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+CREATE TABLE bps_cmp_b.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+CREATE TABLE bps_cmp_c.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+INSERT INTO bps_cmp_a.t SELECT seq, REPEAT('a', 120) FROM seq_1_to_200;
+INSERT INTO bps_cmp_b.t SELECT seq, REPEAT('b', 120) FROM seq_1_to_200;
+INSERT INTO bps_cmp_c.t SELECT seq, REPEAT('c', 120) FROM seq_1_to_200;
+SELECT COUNT(v) FROM bps_cmp_a.t;
+SELECT COUNT(v) FROM bps_cmp_b.t;
+SELECT COUNT(v) FROM bps_cmp_c.t;
+SELECT s.schema_name AS missing_from_one_side
+FROM (
+SELECT SCHEMA_NAME AS schema_name
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME LIKE 'bps_cmp_%'
+        UNION
+SELECT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '') AS schema_name
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+WHERE TABLE_NAME LIKE '`bps_cmp_%'
+     ) s
+LEFT JOIN INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+ON new.SCHEMA_NAME = s.schema_name
+LEFT JOIN (
+SELECT DISTINCT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '')
+AS schema_name
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+WHERE TABLE_NAME LIKE '`bps_cmp_%'
+     ) old
+ON old.schema_name = s.schema_name
+WHERE new.SCHEMA_NAME IS NULL OR old.schema_name IS NULL
+ORDER BY s.schema_name;
+missing_from_one_side
+SELECT new.SCHEMA_NAME,
+(new.PAGES >= old.pages - 5 AND new.PAGES <= old.pages + 5) AS within_tol
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+JOIN (
+SELECT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '')
+AS schema_name,
+COUNT(*) AS pages
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+WHERE TABLE_NAME LIKE '`bps_cmp_%'
+        GROUP BY schema_name
+) old
+ON old.schema_name = new.SCHEMA_NAME
+WHERE new.SCHEMA_NAME LIKE 'bps_cmp_%'
+ORDER BY new.SCHEMA_NAME;
+SCHEMA_NAME	within_tol
+bps_cmp_a	1
+bps_cmp_b	1
+bps_cmp_c	1
+SELECT new.SCHEMA_NAME,
+(new.ALLOCATED_BYTES >= sys_v.allocated - 81920
+AND new.ALLOCATED_BYTES <= sys_v.allocated + 81920) AS bytes_within_tol
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+JOIN sys.x$innodb_buffer_stats_by_schema sys_v
+ON sys_v.object_schema = new.SCHEMA_NAME
+WHERE new.SCHEMA_NAME LIKE 'bps_cmp_%'
+ORDER BY new.SCHEMA_NAME;
+SCHEMA_NAME	bytes_within_tol
+bps_cmp_a	1
+bps_cmp_b	1
+bps_cmp_c	1
+DROP DATABASE bps_cmp_a;
+DROP DATABASE bps_cmp_b;
+DROP DATABASE bps_cmp_c;

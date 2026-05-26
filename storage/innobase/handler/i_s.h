@@ -61,6 +61,10 @@ extern struct st_maria_plugin	i_s_innodb_sys_foreign_cols;
 extern struct st_maria_plugin	i_s_innodb_sys_tablespaces;
 extern struct st_maria_plugin	i_s_innodb_sys_virtual;
 extern struct st_maria_plugin	i_s_innodb_tablespaces_encryption;
+extern struct st_maria_plugin	i_s_innodb_buffer_page_stats_by_schema;
+
+/** Runtime guard for INNODB_BUFFER_PAGE_STATS_BY_SCHEMA. */
+extern my_bool innodb_buffer_page_stats_by_schema_enabled;
 
 /** The latest successfully looked up innodb_fts_aux_table */
 extern table_id_t innodb_ft_aux_table_id;

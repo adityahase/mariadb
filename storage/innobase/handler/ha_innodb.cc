@@ -18850,6 +18850,13 @@ static MYSQL_SYSVAR_BOOL(stats_include_delete_marked,
   "Include delete marked records when calculating persistent statistics",
   NULL, NULL, FALSE);
 
+static MYSQL_SYSVAR_BOOL(buffer_page_stats_by_schema_enabled,
+  innodb_buffer_page_stats_by_schema_enabled,
+  PLUGIN_VAR_OPCMDARG,
+  "Allow queries against INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA. "
+  "When OFF, the table returns an empty result and a warning.",
+  NULL, NULL, TRUE);
+
 static MYSQL_SYSVAR_ENUM(instant_alter_column_allowed,
 			 innodb_instant_alter_column_allowed,
   PLUGIN_VAR_RQCMDARG,
@@ -19902,6 +19909,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(buf_dump_status_frequency),
   MYSQL_SYSVAR(background_thread),
   MYSQL_SYSVAR(encrypt_temporary_tables),
+  MYSQL_SYSVAR(buffer_page_stats_by_schema_enabled),
 
   NULL
 };
@@ -19950,7 +19958,8 @@ i_s_innodb_sys_foreign,
 i_s_innodb_sys_foreign_cols,
 i_s_innodb_sys_tablespaces,
 i_s_innodb_sys_virtual,
-i_s_innodb_tablespaces_encryption
+i_s_innodb_tablespaces_encryption,
+i_s_innodb_buffer_page_stats_by_schema
 maria_declare_plugin_end;
 
 /** @brief Adjust some InnoDB startup parameters based on file contents

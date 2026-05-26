@@ -1,0 +1,92 @@
+# Tests for INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+
+-- source include/have_innodb.inc
+-- source include/not_embedded.inc
+
+# Schema and columns are as specified.
+DESC INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+
+# Two schemas, each with a small table.  Force pages into the buffer pool
+# by selecting from each.
+CREATE DATABASE bps_a;
+CREATE DATABASE bps_b;
+CREATE TABLE bps_a.t (id INT PRIMARY KEY, v VARCHAR(64)) ENGINE=InnoDB;
+CREATE TABLE bps_b.t (id INT PRIMARY KEY, v VARCHAR(64)) ENGINE=InnoDB;
+INSERT INTO bps_a.t VALUES (1, REPEAT('a', 60)), (2, REPEAT('a', 60));
+INSERT INTO bps_b.t VALUES (1, REPEAT('b', 60)), (2, REPEAT('b', 60));
+SELECT COUNT(*) FROM bps_a.t;
+SELECT COUNT(*) FROM bps_b.t;
+
+# Both schemas appear with at least one page and non-zero allocation.
+SELECT SCHEMA_NAME, PAGES > 0, ALLOCATED_BYTES > 0
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME IN ('bps_a', 'bps_b')
+ORDER BY SCHEMA_NAME;
+
+# Toggling the guard OFF returns an empty result with a warning.
+SET GLOBAL innodb_buffer_page_stats_by_schema_enabled = OFF;
+SELECT * FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+SHOW WARNINGS;
+SET GLOBAL innodb_buffer_page_stats_by_schema_enabled = ON;
+
+# Re-enable returns to a working state with no lingering warnings.
+SELECT COUNT(*) > 0 AS reenabled
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+SHOW WARNINGS;
+
+# Without PROCESS privilege the query is rejected (same behaviour as
+# INNODB_BUFFER_PAGE).
+CREATE USER bps_user@localhost;
+GRANT SELECT ON *.* TO bps_user@localhost;
+--connect (con1, localhost, bps_user,,)
+--error ER_SPECIFIC_ACCESS_DENIED_ERROR
+SELECT * FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA;
+--disconnect con1
+--connection default
+DROP USER bps_user@localhost;
+
+DROP DATABASE bps_a;
+DROP DATABASE bps_b;
+
+# --- Scale path: many schemas exercise the scratch-buffer + post-aggregation
+# code path that handles production buffer pools.  Create 50 schemas,
+# touch each so its index pages enter the buffer pool, then assert that
+# every schema appears with non-zero counters and the total page count
+# adds up to something sensible.
+--disable_query_log
+--disable_warnings
+--disable_result_log
+let $n = 50;
+while ($n)
+{
+  eval CREATE DATABASE bps_many_$n;
+  eval CREATE TABLE bps_many_$n.t (id INT PRIMARY KEY, v VARCHAR(64))
+       ENGINE=InnoDB;
+  eval INSERT INTO bps_many_$n.t VALUES (1, REPEAT('x', 60));
+  eval SELECT COUNT(*) FROM bps_many_$n.t;
+  dec $n;
+}
+--enable_result_log
+--enable_warnings
+--enable_query_log
+
+# All 50 schemas should appear with at least one resident page.
+SELECT COUNT(*) AS schemas_with_pages
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME LIKE 'bps_many_%' AND PAGES > 0;
+
+# Total allocation across our schemas is positive.
+SELECT SUM(ALLOCATED_BYTES) > 0 AS bytes_accounted
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+WHERE SCHEMA_NAME LIKE 'bps_many_%';
+
+--disable_query_log
+--disable_result_log
+let $n = 50;
+while ($n)
+{
+  eval DROP DATABASE bps_many_$n;
+  dec $n;
+}
+--enable_result_log
+--enable_query_log

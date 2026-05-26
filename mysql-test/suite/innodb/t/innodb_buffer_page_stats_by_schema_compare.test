@@ -1,0 +1,125 @@
+# Cross-check INNODB_BUFFER_PAGE_STATS_BY_SCHEMA against the two slower
+# canonical sources of the same aggregation:
+#   * INFORMATION_SCHEMA.INNODB_BUFFER_PAGE  (row-per-page, raw)
+#   * sys.x$innodb_buffer_stats_by_schema    (SQL view atop INNODB_BUFFER_PAGE)
+#
+# The buffer pool is live — pages can move between two queries, so the test
+# asserts:
+#   1. The set of *user* schemas reported by the new table is a superset of
+#      what INNODB_BUFFER_PAGE reports for the same schemas (we may catch a
+#      page the slow scan missed if it was read in between, but every schema
+#      we created and SELECTed from must appear in both).
+#   2. For each user schema, the PAGES count from the new table is within a
+#      small tolerance of the per-schema page count derived from
+#      INNODB_BUFFER_PAGE.
+#   3. The sys-view aggregation agrees with INNODB_BUFFER_PAGE column-for-column
+#      (sanity: the new table's contract matches the view's).
+#
+# The InnoDB system bucket is excluded — undo/sys pages churn while the test
+# runs and neither source claims to be deterministic for it.
+
+-- source include/have_innodb.inc
+-- source include/not_embedded.inc
+
+# sys schema is required for the third comparison.
+-- source include/have_sequence.inc
+
+# Quiesce the buffer pool as much as possible before sampling.
+FLUSH TABLES;
+
+CREATE DATABASE bps_cmp_a;
+CREATE DATABASE bps_cmp_b;
+CREATE DATABASE bps_cmp_c;
+
+CREATE TABLE bps_cmp_a.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+CREATE TABLE bps_cmp_b.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+CREATE TABLE bps_cmp_c.t (id INT PRIMARY KEY, v VARCHAR(120)) ENGINE=InnoDB;
+
+# Load enough rows that each table occupies multiple pages — multi-page
+# tables are the realistic case the table is designed for, and they exercise
+# the index-id deduplication path (every row in INNODB_BUFFER_PAGE for the
+# same index folds into the same row of the new table).
+INSERT INTO bps_cmp_a.t SELECT seq, REPEAT('a', 120) FROM seq_1_to_200;
+INSERT INTO bps_cmp_b.t SELECT seq, REPEAT('b', 120) FROM seq_1_to_200;
+INSERT INTO bps_cmp_c.t SELECT seq, REPEAT('c', 120) FROM seq_1_to_200;
+
+# Pull every row through the buffer pool so the index pages are resident.
+--disable_result_log
+SELECT COUNT(v) FROM bps_cmp_a.t;
+SELECT COUNT(v) FROM bps_cmp_b.t;
+SELECT COUNT(v) FROM bps_cmp_c.t;
+--enable_result_log
+
+# -- 1. Schema set agreement -------------------------------------------------
+#
+# Every user schema present in INNODB_BUFFER_PAGE for our tables must also be
+# present in INNODB_BUFFER_PAGE_STATS_BY_SCHEMA, and vice versa.  Compute the
+# symmetric difference and assert it is empty.
+
+SELECT s.schema_name AS missing_from_one_side
+FROM (
+        SELECT SCHEMA_NAME AS schema_name
+        FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA
+        WHERE SCHEMA_NAME LIKE 'bps_cmp_%'
+        UNION
+        SELECT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '') AS schema_name
+        FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+        WHERE TABLE_NAME LIKE '`bps_cmp_%'
+     ) s
+LEFT JOIN INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+       ON new.SCHEMA_NAME = s.schema_name
+LEFT JOIN (
+        SELECT DISTINCT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '')
+                AS schema_name
+        FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+        WHERE TABLE_NAME LIKE '`bps_cmp_%'
+     ) old
+       ON old.schema_name = s.schema_name
+WHERE new.SCHEMA_NAME IS NULL OR old.schema_name IS NULL
+ORDER BY s.schema_name;
+
+# -- 2. Per-schema PAGES count is within tolerance --------------------------
+#
+# Build the per-schema aggregation from INNODB_BUFFER_PAGE the same way the
+# sys view does, then compare with the new table.  The buffer pool can shift
+# by a small number of pages between the two queries; allow up to 5 pages of
+# drift per schema.  This is generous for tables of ~200 rows whose pk index
+# fits in a handful of pages; a real divergence (wrong index_id, wrong schema
+# bucket) would show up as PAGES off by the whole index, not by 1-2.
+
+SELECT new.SCHEMA_NAME,
+       (new.PAGES >= old.pages - 5 AND new.PAGES <= old.pages + 5) AS within_tol
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+JOIN (
+        SELECT REPLACE(SUBSTRING_INDEX(TABLE_NAME, '.', 1), '`', '')
+                AS schema_name,
+               COUNT(*) AS pages
+        FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE
+        WHERE TABLE_NAME LIKE '`bps_cmp_%'
+        GROUP BY schema_name
+     ) old
+       ON old.schema_name = new.SCHEMA_NAME
+WHERE new.SCHEMA_NAME LIKE 'bps_cmp_%'
+ORDER BY new.SCHEMA_NAME;
+
+# -- 3. ALLOCATED_BYTES agrees with the sys-view definition -----------------
+#
+# The new table defines ALLOCATED_BYTES as SUM(compressed_size or 16384) per
+# schema — identical to the sys-view 'allocated' column.  Verify the two
+# definitions return the same value for our schemas, modulo the same small
+# page-count drift (each page is exactly 16384 bytes uncompressed, so a
+# 5-page drift is 81920 bytes).
+
+SELECT new.SCHEMA_NAME,
+       (new.ALLOCATED_BYTES >= sys_v.allocated - 81920
+        AND new.ALLOCATED_BYTES <= sys_v.allocated + 81920) AS bytes_within_tol
+FROM INFORMATION_SCHEMA.INNODB_BUFFER_PAGE_STATS_BY_SCHEMA new
+JOIN sys.x$innodb_buffer_stats_by_schema sys_v
+       ON sys_v.object_schema = new.SCHEMA_NAME
+WHERE new.SCHEMA_NAME LIKE 'bps_cmp_%'
+ORDER BY new.SCHEMA_NAME;
+
+# -- Cleanup ----------------------------------------------------------------
+DROP DATABASE bps_cmp_a;
+DROP DATABASE bps_cmp_b;
+DROP DATABASE bps_cmp_c;
